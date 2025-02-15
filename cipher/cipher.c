@@ -2644,9 +2644,11 @@ gcry_error_t _gcry_cipher_wc_gettag(gcry_cipher_hd_t h, void* outtag,
         case GCRY_CIPHER_MODE_GCM:
             /* Initialize GCM if not already done. IV should always be set
              * before this */
-            if (ret == 0 && !h->u_mode.wolf_aes.flags.aes_mode_init_enc) {
-                ret = wc_AesGcmInit(&h->u_mode.wolf_aes.enc_ctx, NULL, 0, NULL,
-                                    0);
+            if (!h->u_mode.wolf_aes.flags.aes_mode_init_enc) {
+                ret = wc_AesGcmInit(&h->u_mode.wolf_aes.enc_ctx,
+                                   h->u_mode.wolf_aes.aadbuf,
+                                   h->u_mode.wolf_aes.aadlen,
+                                   NULL, 0);
                 printf("** AES GCM: Init, ret=%d\n", ret);
                 h->u_mode.wolf_aes.flags.aes_mode_init_enc = 1;
             }
@@ -2678,10 +2680,74 @@ gcry_error_t _gcry_cipher_wc_checktag(gcry_cipher_hd_t h, const void* intag,
     if (h->mode != GCRY_CIPHER_MODE_GCM)
         return GPG_ERR_INV_CIPHER_MODE;
 
+    /* If direction not set, do a zero-length encryption to initialize GCM state */
+    if (h->u_mode.wolf_aes.flag_setDir == -1) {
+        h->u_mode.wolf_aes.flag_setDir = AES_DECRYPTION;
+
+        /* Set key if not already set */
+        if (!h->u_mode.wolf_aes.flags.key_set_dec) {
+            printf("** AES GCM: Setting key\n");
+            ret = wc_AesGcmSetKey(&h->u_mode.wolf_aes.dec_ctx,
+                                  h->u_mode.wolf_aes.key,
+                                  h->u_mode.wolf_aes.keylen);
+            if (ret != 0)
+                return GPG_ERR_INTERNAL;
+            h->u_mode.wolf_aes.flags.key_set_dec = 1;
+        }
+
+        /* Set IV if not already set, based on IV state flags */
+        if (!h->u_mode.wolf_aes.flags.iv_set_dec) {
+            printf("** AES GCM: Setting IV\n");
+            /* IV generation requested */
+            if (h->u_mode.wolf_aes.flags.iv_gen) {
+                printf("** AES GCM: Using IV generation\n");
+                ret = wc_AesGcmSetIV(&h->u_mode.wolf_aes.dec_ctx, AES_IV_SIZE,
+                                     h->u_mode.wolf_aes.iv,
+                                     h->u_mode.wolf_aes.ivlen,
+                                     h->u_mode.wolf_aes.rng);
+                /* IV buffer now holds generated IV */
+                h->u_mode.wolf_aes.flags.iv_buf_valid = 1;
+            }
+            /* IV set externally via API */
+            else if (h->u_mode.wolf_aes.flags.iv_buf_valid) {
+                printf("** AES GCM: Using externally provided IV\n");
+                ret = wc_AesGcmSetExtIV(&h->u_mode.wolf_aes.dec_ctx,
+                                        h->u_mode.wolf_aes.iv,
+                                        h->u_mode.wolf_aes.ivlen);
+            }
+            /* IV not set, use zero IV */
+            else {
+                printf("** AES GCM: Using zero IV\n");
+                memset(h->u_mode.wolf_aes.iv, 0, AES_IV_SIZE);
+                ret = wc_AesGcmSetExtIV(&h->u_mode.wolf_aes.dec_ctx,
+                                        h->u_mode.wolf_aes.iv, AES_IV_SIZE);
+                /* IV buffer now holds zero IV */
+                h->u_mode.wolf_aes.flags.iv_buf_valid = 1;
+            }
+            h->u_mode.wolf_aes.flags.iv_set_dec = 1;
+        }
+    }
+
     switch (h->mode) {
         case GCRY_CIPHER_MODE_GCM:
-            ret = wc_AesGcmDecryptFinal(&h->u_mode.wolf_aes.dec_ctx, intag, taglen);
-            printf("** AES GCM: Check tag, ret=%d\n", ret);
+             /* Initialize GCM if not already done. IV should always be set
+             * before this */
+            if (!h->u_mode.wolf_aes.flags.aes_mode_init_dec) {
+                ret = wc_AesGcmInit(&h->u_mode.wolf_aes.dec_ctx,
+                                    NULL, 0,
+                                    NULL, 0);
+                printf("** AES GCM: Init, ret=%d\n", ret);
+                h->u_mode.wolf_aes.flags.aes_mode_init_dec = 1;
+            }
+
+            if (h->u_mode.wolf_aes.flag_setDir == AES_DECRYPTION) {
+                ret = wc_AesGcmDecryptFinal(&h->u_mode.wolf_aes.dec_ctx, intag, taglen);
+                printf("** AES GCM: Check tag, ret=%d\n", ret);
+            }
+            else {
+                printf("** AES GCM: INVALID DIRECTION\n");
+                return GPG_ERR_INV_CIPHER_MODE;
+            }
             break;
 
         default:
