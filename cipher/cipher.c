@@ -2350,7 +2350,7 @@ gcry_error_t _gcry_cipher_wc_encrypt(gcry_cipher_hd_t h, void* out,
 
         case GCRY_CIPHER_MODE_GCM:
             /* Set key if not already set */
-            if (!h->u_mode.wolf_aes.flags.key_set_enc) {
+            if (!h->u_mode.wolf_aes.flags.key_set_enc && h->u_mode.wolf_aes.flags.key_buf_valid) {
                 printf("** AES GCM: Setting key\n");
                 ret = wc_AesGcmSetKey(&h->u_mode.wolf_aes.enc_ctx,
                                       h->u_mode.wolf_aes.key,
@@ -2500,7 +2500,7 @@ gcry_error_t _gcry_cipher_wc_decrypt(gcry_cipher_hd_t h, void* out,
 
         case GCRY_CIPHER_MODE_GCM:
             /* Set key if not already set */
-            if (!h->u_mode.wolf_aes.flags.key_set_dec) {
+            if (!h->u_mode.wolf_aes.flags.key_set_dec && h->u_mode.wolf_aes.flags.key_buf_valid) {
                 printf("** AES GCM: Setting key\n");
                 ret = wc_AesGcmSetKey(&h->u_mode.wolf_aes.dec_ctx,
                                       h->u_mode.wolf_aes.key,
@@ -2592,12 +2592,12 @@ gcry_error_t _gcry_cipher_wc_gettag(gcry_cipher_hd_t h, void* outtag,
         return GPG_ERR_INV_CIPHER_MODE;
     }
 
-    /* If direction not set, do a zero-length encryption to initialize GCM state */
-    if (h->u_mode.wolf_aes.flag_setDir == -1) {
+    /* If direction not set, or key needs to be reset, initialize GCM state */
+    if (h->u_mode.wolf_aes.flag_setDir == -1 || !h->u_mode.wolf_aes.flags.key_set_enc) {
         h->u_mode.wolf_aes.flag_setDir = AES_ENCRYPTION;
 
         /* Set key if not already set */
-        if (!h->u_mode.wolf_aes.flags.key_set_enc) {
+        if (!h->u_mode.wolf_aes.flags.key_set_enc && h->u_mode.wolf_aes.flags.key_buf_valid) {
             printf("** AES GCM: Setting key\n");
             ret = wc_AesGcmSetKey(&h->u_mode.wolf_aes.enc_ctx,
                                   h->u_mode.wolf_aes.key,
@@ -2680,12 +2680,12 @@ gcry_error_t _gcry_cipher_wc_checktag(gcry_cipher_hd_t h, const void* intag,
     if (h->mode != GCRY_CIPHER_MODE_GCM)
         return GPG_ERR_INV_CIPHER_MODE;
 
-    /* If direction not set, do a zero-length encryption to initialize GCM state */
-    if (h->u_mode.wolf_aes.flag_setDir == -1) {
+    /* If direction not set, or key needs to be reset, initialize GCM state */
+    if (h->u_mode.wolf_aes.flag_setDir == -1 || !h->u_mode.wolf_aes.flags.key_set_dec) {
         h->u_mode.wolf_aes.flag_setDir = AES_DECRYPTION;
 
         /* Set key if not already set */
-        if (!h->u_mode.wolf_aes.flags.key_set_dec) {
+        if (!h->u_mode.wolf_aes.flags.key_set_dec && h->u_mode.wolf_aes.flags.key_buf_valid) {
             printf("** AES GCM: Setting key\n");
             ret = wc_AesGcmSetKey(&h->u_mode.wolf_aes.dec_ctx,
                                   h->u_mode.wolf_aes.key,
