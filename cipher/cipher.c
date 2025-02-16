@@ -2653,10 +2653,19 @@ gcry_error_t _gcry_cipher_wc_gettag(gcry_cipher_hd_t h, void* outtag,
                 h->u_mode.wolf_aes.flags.aes_mode_init_enc = 1;
             }
 
+            /* AES GCM does not support taglen > AES_BLOCK_SIZE */
+            if (taglen > AES_BLOCK_SIZE) {
+                printf("** AES GCM: Truncating tag to AES_BLOCK_SIZE\n");
+                taglen = AES_BLOCK_SIZE;
+            }
+
             if (h->u_mode.wolf_aes.flag_setDir == AES_ENCRYPTION) {
                 ret = wc_AesGcmEncryptFinal(&h->u_mode.wolf_aes.enc_ctx, outtag,
                                             taglen);
                 printf("** AES GCM: Encrypt final, ret=%d\n", ret);
+                if (ret != 0) {
+                    printf("outtag: %p, taglen: %d\n", outtag, taglen);
+                }
             }
             else {
                 printf("** AES GCM: INVALID DIRECTION\n");
