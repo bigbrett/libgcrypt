@@ -4459,6 +4459,7 @@ _check_gcm_cipher (unsigned int step)
 
   for (i = 0; i < sizeof (tv) / sizeof (tv[0]); i++)
     {
+      printf("\n\n\n\n*************************\nTV[%d]\n*************************\n", i);
       /* The AES algorithm is allowed in FIPS mode */
       if ((err = gcry_cipher_test_algo (tv[i].algo)))
         {

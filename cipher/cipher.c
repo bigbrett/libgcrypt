@@ -2425,6 +2425,8 @@ gcry_error_t _gcry_cipher_wc_encrypt(gcry_cipher_hd_t h, void* out,
             }
 
             if (ret == 0) {
+                printf("** AES GCM: Encrypt adding auth data[%d]:\n", h->u_mode.wolf_aes.aadlen);
+                print_hex(" AAD", h->u_mode.wolf_aes.aadbuf, h->u_mode.wolf_aes.aadlen);
                 ret = wc_AesGcmEncryptUpdate(&h->u_mode.wolf_aes.enc_ctx, out, in,
                                              inlen, h->u_mode.wolf_aes.aadbuf,
                                              h->u_mode.wolf_aes.aadlen);
@@ -2434,6 +2436,7 @@ gcry_error_t _gcry_cipher_wc_encrypt(gcry_cipher_hd_t h, void* out,
                     _gcry_free(h->u_mode.wolf_aes.aadbuf);
                     h->u_mode.wolf_aes.aadbuf = NULL;
                     h->u_mode.wolf_aes.aadlen = 0;
+                    printf("** AES GCM: AAD buffer freed\n");
                 }
             }
             break;
@@ -2574,6 +2577,8 @@ gcry_error_t _gcry_cipher_wc_decrypt(gcry_cipher_hd_t h, void* out,
                 h->u_mode.wolf_aes.flags.aes_mode_init_dec = 1;
             }
 
+            printf("** AES GCM: Decrypt auth data[%d]:\n", h->u_mode.wolf_aes.aadlen);
+            print_hex(" AAD", h->u_mode.wolf_aes.aadbuf, h->u_mode.wolf_aes.aadlen);
 
             ret = wc_AesGcmDecryptUpdate(&h->u_mode.wolf_aes.dec_ctx, out, in,
                                          inlen, h->u_mode.wolf_aes.aadbuf,
@@ -2581,6 +2586,7 @@ gcry_error_t _gcry_cipher_wc_decrypt(gcry_cipher_hd_t h, void* out,
             printf("** AES GCM: Decrypt update, ret=%d\n", ret);
             /* Free AAD buffer after use */
             if (h->u_mode.wolf_aes.aadbuf) {
+                printf("** AES GCM: Freeing AAD buffer\n");
                 _gcry_free(h->u_mode.wolf_aes.aadbuf);
                 h->u_mode.wolf_aes.aadbuf = NULL;
                 h->u_mode.wolf_aes.aadlen = 0;
@@ -2685,9 +2691,12 @@ gcry_error_t _gcry_cipher_wc_gettag(gcry_cipher_hd_t h, void* outtag,
             if (h->u_mode.wolf_aes.flag_setDir == AES_ENCRYPTION) {
                 ret = wc_AesGcmEncryptFinal(&h->u_mode.wolf_aes.enc_ctx, outtag,
                                             taglen);
-                printf("** AES GCM: Encrypt final, ret=%d\n", ret);
+                printf("** AES GCM: Encrypt final, taglen=%d, ret=%d\n", taglen, ret);
                 if (ret != 0) {
                     printf("outtag: %p, taglen: %d\n", outtag, taglen);
+                }
+                else {
+                    print_hex("** ENCRYPT auth_tag", outtag, taglen);
                 }
             }
             else {
@@ -2725,7 +2734,8 @@ gcry_error_t _gcry_cipher_wc_checktag(gcry_cipher_hd_t h, const void* intag,
             printf("** AES GCM: Tag length mismatch\n");
             return GPG_ERR_INV_STATE;
         }
-        printf("** AES GCM: Tag already finalized, checking against buffered tag\n");
+        printf("** AES GCM: Tag already finalized, checking against buffered "
+               "tag\n");
         ret = buf_eq_const(h->u_mode.wolf_aes.auth_tag, intag, taglen);
         return (ret == 0) ? 0 : GPG_ERR_CHECKSUM;
     }
@@ -2788,27 +2798,16 @@ gcry_error_t _gcry_cipher_wc_checktag(gcry_cipher_hd_t h, const void* intag,
         h->u_mode.wolf_aes.flags.aes_mode_init_dec = 1;
     }
 
-    /* HACK: Even though we are decrypting, we need to use the encrypt final
-     * operation in order to obtain the internally computed auth tag such that
-     * we can buffer it for later use. The only difference between finalization
-     * for wolfCrypt encrypt and decrypt is the comparison against input data,
-     * so we just need to do that ourselves here. */
+    /* HACK: buffer the auth tag for later use, as the finalization operation
+     * can only be performed once */
     if (h->u_mode.wolf_aes.flag_setDir == AES_DECRYPTION) {
-        ret = wc_AesGcmEncryptFinal(&h->u_mode.wolf_aes.dec_ctx,
-                                    h->u_mode.wolf_aes.auth_tag, taglen);
-        print_hex("** ENCRYPT intag", intag, taglen);
-        print_hex("** ENCRYPT auth_tag", h->u_mode.wolf_aes.auth_tag, taglen);
-        if (ret == 0) {
-            h->u_mode.wolf_aes.flags.tag_finalized = 1;
-            h->u_mode.wolf_aes.auth_taglen         = taglen;
-            /* compare input tag against buffered tag */
-            ret = buf_eq_const(h->u_mode.wolf_aes.auth_tag, intag, taglen);
-            printf("** AES GCM: Check tag, ret=%d\n", ret);
-            return (ret == 1) ? 0 : GPG_ERR_CHECKSUM;
-        }
-        else {
-            printf("** AES GCM check tag: finalization failed, ret=%d\n", ret);
-        }
+        ret = wc_AesGcmDecryptFinal_ex(&h->u_mode.wolf_aes.dec_ctx, intag,
+                                       taglen, h->u_mode.wolf_aes.auth_tag);
+        print_hex("** DECRYPT intag", intag, taglen);
+        print_hex("** DECRYPT auth_tag", h->u_mode.wolf_aes.auth_tag, taglen);
+        printf("** DECRYPT Final ret=%d\n", ret);
+        h->u_mode.wolf_aes.flags.tag_finalized = 1;
+        h->u_mode.wolf_aes.auth_taglen         = taglen;
     }
     else {
         printf("** AES GCM: INVALID DIRECTION\n");
