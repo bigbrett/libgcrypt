@@ -2065,6 +2065,24 @@ static void set_wolfcrypt_handle(gcry_cipher_hd_t hd) {
     hd->flags |= GCRY_CIPHER_WOLFSSL;
 }
 
+static int is_tag_length_valid(size_t taglen)
+{
+  switch (taglen)
+    {
+    /* Allowed tag lengths from NIST SP 800-38D.  */
+    case 128 / 8: /* GCRY_GCM_BLOCK_LEN */
+    case 120 / 8:
+    case 112 / 8:
+    case 104 / 8:
+    case 96 / 8:
+    case 64 / 8:
+    case 32 / 8:
+      return 1;
+
+    default:
+      return 0;
+    }
+}
 
 
 /* Check if algo/mode should use wolfCrypt */
@@ -2592,6 +2610,11 @@ gcry_error_t _gcry_cipher_wc_gettag(gcry_cipher_hd_t h, void* outtag,
         return GPG_ERR_INV_CIPHER_MODE;
     }
 
+    if (!(is_tag_length_valid(taglen) || taglen >= AES_BLOCK_SIZE)) {
+        printf("** AES GCM: Invalid tag length %d\n", taglen);
+        return GPG_ERR_INV_LENGTH;
+    }
+
     /* If direction not set, or key needs to be reset, initialize GCM state */
     if (h->u_mode.wolf_aes.flag_setDir == -1 || !h->u_mode.wolf_aes.flags.key_set_enc) {
         h->u_mode.wolf_aes.flag_setDir = AES_ENCRYPTION;
@@ -2688,6 +2711,12 @@ gcry_error_t _gcry_cipher_wc_checktag(gcry_cipher_hd_t h, const void* intag,
 
     if (h->mode != GCRY_CIPHER_MODE_GCM)
         return GPG_ERR_INV_CIPHER_MODE;
+
+
+    if (!(is_tag_length_valid(taglen) || taglen >= AES_BLOCK_SIZE)) {
+        printf("** AES GCM: Invalid tag length %d\n", taglen);
+        return GPG_ERR_INV_LENGTH;
+    }
 
     /* If tag has already been finalized, simply check the input tag against the
      * buffered finalized tag */
