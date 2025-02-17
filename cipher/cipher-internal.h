@@ -480,6 +480,8 @@ struct gcry_cipher_handle
       size_t keylen;
       unsigned char iv[AES_IV_SIZE];
       size_t ivlen;
+      unsigned char auth_tag[AES_MAX_KEY_SIZE];
+      size_t auth_taglen;
       struct {
           unsigned int key_buf_valid:1;  /* Key buffer contains valid key */
           unsigned int key_set_enc:1;    /* Key has been set for encryption */
@@ -492,7 +494,7 @@ struct gcry_cipher_handle
           unsigned int aes_init_done:1; /* AES contexts have been initialized */
           unsigned int aes_mode_init_enc:1; /* AES mode specific initialization done */
           unsigned int aes_mode_init_dec:1; /* AES mode specific initialization done */
-
+          unsigned int tag_finalized:1; /* Tag finalized, buffer is valid */
       } flags;
 
       unsigned char *aadbuf;

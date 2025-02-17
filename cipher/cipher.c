@@ -2689,12 +2689,26 @@ gcry_error_t _gcry_cipher_wc_checktag(gcry_cipher_hd_t h, const void* intag,
     if (h->mode != GCRY_CIPHER_MODE_GCM)
         return GPG_ERR_INV_CIPHER_MODE;
 
+    /* If tag has already been finalized, simply check the input tag against the
+     * buffered finalized tag */
+    if (h->u_mode.wolf_aes.flags.tag_finalized) {
+        if (taglen != h->u_mode.wolf_aes.auth_taglen) {
+            printf("** AES GCM: Tag length mismatch\n");
+            return GPG_ERR_INV_STATE;
+        }
+        printf("** AES GCM: Tag already finalized, checking against buffered tag\n");
+        ret = buf_eq_const(h->u_mode.wolf_aes.auth_tag, intag, taglen);
+        return (ret == 0) ? 0 : GPG_ERR_CHECKSUM;
+    }
+
     /* If direction not set, or key needs to be reset, initialize GCM state */
-    if (h->u_mode.wolf_aes.flag_setDir == -1 || !h->u_mode.wolf_aes.flags.key_set_dec) {
+    if (h->u_mode.wolf_aes.flag_setDir == -1 ||
+        !h->u_mode.wolf_aes.flags.key_set_dec) {
         h->u_mode.wolf_aes.flag_setDir = AES_DECRYPTION;
 
         /* Set key if not already set */
-        if (!h->u_mode.wolf_aes.flags.key_set_dec && h->u_mode.wolf_aes.flags.key_buf_valid) {
+        if (!h->u_mode.wolf_aes.flags.key_set_dec &&
+            h->u_mode.wolf_aes.flags.key_buf_valid) {
             printf("** AES GCM: Setting key\n");
             ret = wc_AesGcmSetKey(&h->u_mode.wolf_aes.dec_ctx,
                                   h->u_mode.wolf_aes.key,
@@ -2737,30 +2751,39 @@ gcry_error_t _gcry_cipher_wc_checktag(gcry_cipher_hd_t h, const void* intag,
         }
     }
 
-    switch (h->mode) {
-        case GCRY_CIPHER_MODE_GCM:
-             /* Initialize GCM if not already done. IV should always be set
-             * before this */
-            if (!h->u_mode.wolf_aes.flags.aes_mode_init_dec) {
-                ret = wc_AesGcmInit(&h->u_mode.wolf_aes.dec_ctx,
-                                    NULL, 0,
-                                    NULL, 0);
-                printf("** AES GCM: Init, ret=%d\n", ret);
-                h->u_mode.wolf_aes.flags.aes_mode_init_dec = 1;
-            }
+    /* Initialize GCM if not already done. IV should always be set
+     * before this */
+    if (!h->u_mode.wolf_aes.flags.aes_mode_init_dec) {
+        ret = wc_AesGcmInit(&h->u_mode.wolf_aes.dec_ctx, NULL, 0, NULL, 0);
+        printf("** AES GCM: Init, ret=%d\n", ret);
+        h->u_mode.wolf_aes.flags.aes_mode_init_dec = 1;
+    }
 
-            if (h->u_mode.wolf_aes.flag_setDir == AES_DECRYPTION) {
-                ret = wc_AesGcmDecryptFinal(&h->u_mode.wolf_aes.dec_ctx, intag, taglen);
-                printf("** AES GCM: Check tag, ret=%d\n", ret);
-            }
-            else {
-                printf("** AES GCM: INVALID DIRECTION\n");
-                return GPG_ERR_INV_CIPHER_MODE;
-            }
-            break;
-
-        default:
-            return GPG_ERR_INV_CIPHER_MODE;
+    /* HACK: Even though we are decrypting, we need to use the encrypt final
+     * operation in order to obtain the internally computed auth tag such that
+     * we can buffer it for later use. The only difference between finalization
+     * for wolfCrypt encrypt and decrypt is the comparison against input data,
+     * so we just need to do that ourselves here. */
+    if (h->u_mode.wolf_aes.flag_setDir == AES_DECRYPTION) {
+        ret = wc_AesGcmEncryptFinal(&h->u_mode.wolf_aes.dec_ctx,
+                                    h->u_mode.wolf_aes.auth_tag, taglen);
+        print_hex("** ENCRYPT intag", intag, taglen);
+        print_hex("** ENCRYPT auth_tag", h->u_mode.wolf_aes.auth_tag, taglen);
+        if (ret == 0) {
+            h->u_mode.wolf_aes.flags.tag_finalized = 1;
+            h->u_mode.wolf_aes.auth_taglen         = taglen;
+            /* compare input tag against buffered tag */
+            ret = buf_eq_const(h->u_mode.wolf_aes.auth_tag, intag, taglen);
+            printf("** AES GCM: Check tag, ret=%d\n", ret);
+            return (ret == 1) ? 0 : GPG_ERR_CHECKSUM;
+        }
+        else {
+            printf("** AES GCM check tag: finalization failed, ret=%d\n", ret);
+        }
+    }
+    else {
+        printf("** AES GCM: INVALID DIRECTION\n");
+        return GPG_ERR_INV_CIPHER_MODE;
     }
 
     return (ret == 0) ? 0 : GPG_ERR_CHECKSUM;
@@ -2816,6 +2839,11 @@ _gcry_cipher_wc_ctl (gcry_cipher_hd_t h, int cmd, void *buffer, size_t buflen)
 
                     h->u_mode.wolf_aes.flags.aes_mode_init_enc = 0;
                     h->u_mode.wolf_aes.flags.aes_mode_init_dec = 0;
+
+                    h->u_mode.wolf_aes.flags.tag_finalized = 0;
+                    h->u_mode.wolf_aes.auth_taglen = 0;
+                    memset(h->u_mode.wolf_aes.auth_tag, 0,
+                           sizeof(h->u_mode.wolf_aes.auth_tag));
                     break;
             }
             break;
