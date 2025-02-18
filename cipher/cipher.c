@@ -2087,6 +2087,74 @@ static int is_tag_length_valid(size_t taglen)
 }
 
 
+static int deferred_gcm_init(gcry_cipher_hd_t h, int direction)
+{
+    int  ret = 0;
+    Aes* ctx = (direction == AES_ENCRYPTION) ? &h->u_mode.wolf_aes.enc_ctx
+                                             : &h->u_mode.wolf_aes.dec_ctx;
+
+    /* Get current state of key/iv flags */
+    int key_set = (direction == AES_ENCRYPTION)
+                      ? h->u_mode.wolf_aes.flags.key_set_enc
+                      : h->u_mode.wolf_aes.flags.key_set_dec;
+    int iv_set  = (direction == AES_ENCRYPTION)
+                      ? h->u_mode.wolf_aes.flags.iv_set_enc
+                      : h->u_mode.wolf_aes.flags.iv_set_dec;
+
+    /* Set key if not already set */
+    if (!key_set && h->u_mode.wolf_aes.flags.key_buf_valid) {
+        printf("** AES GCM: Setting key for %s\n",
+               direction == AES_ENCRYPTION ? "encryption" : "decryption");
+        ret = wc_AesGcmSetKey(ctx, h->u_mode.wolf_aes.key,
+                              h->u_mode.wolf_aes.keylen);
+        if (ret != 0) {
+            return GPG_ERR_INTERNAL;
+        }
+        if (direction == AES_ENCRYPTION) {
+            h->u_mode.wolf_aes.flags.key_set_enc = 1;
+        }
+        else {
+            h->u_mode.wolf_aes.flags.key_set_dec = 1;
+        }
+    }
+
+    /* Set IV if not already set, based on IV state flags */
+    if (!iv_set) {
+        /* IV generation requested */
+        if (h->u_mode.wolf_aes.flags.iv_gen) {
+            printf("** AES GCM: Using IV generation\n");
+            ret = wc_AesGcmSetIV(ctx, AES_IV_SIZE, h->u_mode.wolf_aes.iv,
+                                 h->u_mode.wolf_aes.ivlen,
+                                 h->u_mode.wolf_aes.rng);
+            /* IV buffer now holds generated IV */
+            h->u_mode.wolf_aes.flags.iv_buf_valid = 1;
+        }
+        /* IV set externally via API */
+        else if (h->u_mode.wolf_aes.flags.iv_buf_valid) {
+            printf("** AES GCM: Using externally provided IV\n");
+            ret = wc_AesGcmSetExtIV(ctx, h->u_mode.wolf_aes.iv,
+                                    h->u_mode.wolf_aes.ivlen);
+        }
+        /* IV not set, use zero IV */
+        else {
+            printf("** AES GCM: Using zero IV\n");
+            memset(h->u_mode.wolf_aes.iv, 0, AES_IV_SIZE);
+            ret = wc_AesGcmSetExtIV(ctx, h->u_mode.wolf_aes.iv, AES_IV_SIZE);
+            /* IV buffer now holds zero IV */
+            h->u_mode.wolf_aes.flags.iv_buf_valid = 1;
+        }
+
+        if (direction == AES_ENCRYPTION) {
+            h->u_mode.wolf_aes.flags.iv_set_enc = 1;
+        }
+        else {
+            h->u_mode.wolf_aes.flags.iv_set_dec = 1;
+        }
+    }
+
+    return ret;
+}
+
 /* Check if algo/mode should use wolfCrypt */
 int _gcry_cipher_is_wolfcrypt(int algo, int mode, unsigned int flags)
 {
@@ -2376,53 +2444,8 @@ gcry_error_t _gcry_cipher_wc_encrypt(gcry_cipher_hd_t h, void* out,
             break;
 
         case GCRY_CIPHER_MODE_GCM:
-            /* Set key if not already set */
-            if (!h->u_mode.wolf_aes.flags.key_set_enc &&
-                h->u_mode.wolf_aes.flags.key_buf_valid) {
-                printf("** AES GCM: Setting key\n");
-                ret = wc_AesGcmSetKey(&h->u_mode.wolf_aes.enc_ctx,
-                                      h->u_mode.wolf_aes.key,
-                                      h->u_mode.wolf_aes.keylen);
-                if (ret != 0)
-                    return GPG_ERR_INTERNAL;
-                h->u_mode.wolf_aes.flags.key_set_enc = 1;
-            }
-
-            /* Set IV if not already set, based on IV state flags */
-            if (!h->u_mode.wolf_aes.flags.iv_set_enc) {
-                /* IV generation requested */
-                if (h->u_mode.wolf_aes.flags.iv_gen) {
-                    printf("** AES GCM: Using IV generation\n");
-                    ret = wc_AesGcmSetIV(&h->u_mode.wolf_aes.enc_ctx,
-                                         AES_IV_SIZE, h->u_mode.wolf_aes.iv,
-                                         h->u_mode.wolf_aes.ivlen,
-                                         h->u_mode.wolf_aes.rng);
-                    /* IV buffer now holds generated IV */
-                    h->u_mode.wolf_aes.flags.iv_buf_valid = 1;
-                }
-                /* IV set externally via API */
-                else if (h->u_mode.wolf_aes.flags.iv_buf_valid) {
-                    printf("** AES GCM: Using externally provided IV\n");
-                    ret = wc_AesGcmSetExtIV(&h->u_mode.wolf_aes.enc_ctx,
-                                            h->u_mode.wolf_aes.iv,
-                                            h->u_mode.wolf_aes.ivlen);
-                }
-                /* IV not set, use zero IV */
-                else {
-                    printf("** AES GCM: Using zero IV\n");
-                    memset(h->u_mode.wolf_aes.iv, 0, AES_IV_SIZE);
-                    ret = wc_AesGcmSetExtIV(&h->u_mode.wolf_aes.enc_ctx,
-                                            h->u_mode.wolf_aes.iv, AES_IV_SIZE);
-                    /* IV buffer now holds zero IV */
-                    h->u_mode.wolf_aes.flags.iv_buf_valid = 1;
-                }
-                h->u_mode.wolf_aes.flags.iv_set_enc = 1;
-            }
-
-            if (ret != 0) {
-                printf("** AES GCM: Set IV, ret=%d\n", ret);
-                return GPG_ERR_INTERNAL;
-            }
+            ret = deferred_gcm_init(h, AES_ENCRYPTION);
+            printf("** AES GCM: Deferred init, ret=%d\n", ret);
 
             /* Initialize GCM if not already done. IV should always be set
              * before this */
@@ -2434,7 +2457,7 @@ gcry_error_t _gcry_cipher_wc_encrypt(gcry_cipher_hd_t h, void* out,
             }
 
             if (ret == 0) {
-                printf("** AES GCM: Encrypt adding auth data[%d]:\n",
+                printf("** AES GCM: Encrypt adding auth data[%ld]:\n",
                        h->u_mode.wolf_aes.aadlen);
                 print_hex(" AAD", h->u_mode.wolf_aes.aadbuf,
                           h->u_mode.wolf_aes.aadlen);
@@ -2535,52 +2558,10 @@ gcry_error_t _gcry_cipher_wc_decrypt(gcry_cipher_hd_t h, void* out,
             break;
 
         case GCRY_CIPHER_MODE_GCM:
-            /* Set key if not already set */
-            if (!h->u_mode.wolf_aes.flags.key_set_dec &&
-                h->u_mode.wolf_aes.flags.key_buf_valid) {
-                printf("** AES GCM: Setting key\n");
-                ret = wc_AesGcmSetKey(&h->u_mode.wolf_aes.dec_ctx,
-                                      h->u_mode.wolf_aes.key,
-                                      h->u_mode.wolf_aes.keylen);
-                if (ret != 0)
-                    return GPG_ERR_INTERNAL;
-                h->u_mode.wolf_aes.flags.key_set_dec = 1;
-            }
-
-            /* Set IV if not already set, based on IV state flags */
-            if (!h->u_mode.wolf_aes.flags.iv_set_dec) {
-                /* IV generation requested */
-                if (h->u_mode.wolf_aes.flags.iv_gen) {
-                    printf("** AES GCM: Using IV generation\n");
-                    ret = wc_AesGcmSetIV(&h->u_mode.wolf_aes.dec_ctx,
-                                         AES_IV_SIZE, h->u_mode.wolf_aes.iv,
-                                         h->u_mode.wolf_aes.ivlen,
-                                         h->u_mode.wolf_aes.rng);
-                    /* IV buffer now holds generated IV */
-                    h->u_mode.wolf_aes.flags.iv_buf_valid = 1;
-                }
-                /* IV set externally via API */
-                else if (h->u_mode.wolf_aes.flags.iv_buf_valid) {
-                    printf("** AES GCM: Using externally provided IV\n");
-                    ret = wc_AesGcmSetExtIV(&h->u_mode.wolf_aes.dec_ctx,
-                                            h->u_mode.wolf_aes.iv,
-                                            h->u_mode.wolf_aes.ivlen);
-                }
-                /* IV not set, use zero IV */
-                else {
-                    printf("** AES GCM: Using zero IV\n");
-                    memset(h->u_mode.wolf_aes.iv, 0, AES_IV_SIZE);
-                    ret = wc_AesGcmSetExtIV(&h->u_mode.wolf_aes.dec_ctx,
-                                            h->u_mode.wolf_aes.iv, AES_IV_SIZE);
-                    /* IV buffer now holds zero IV */
-                    h->u_mode.wolf_aes.flags.iv_buf_valid = 1;
-                }
-                h->u_mode.wolf_aes.flags.iv_set_dec = 1;
-            }
-
+            ret = deferred_gcm_init(h, AES_DECRYPTION);
+            printf("** AES GCM: Deferred init, ret=%d\n", ret);
             if (ret != 0) {
-                printf("** AES GCM: Set IV, ret=%d\n", ret);
-                return GPG_ERR_INTERNAL;
+                return ret;
             }
 
             /* Initialize GCM if not already done. IV should always be set
@@ -2592,7 +2573,7 @@ gcry_error_t _gcry_cipher_wc_decrypt(gcry_cipher_hd_t h, void* out,
                 h->u_mode.wolf_aes.flags.aes_mode_init_dec = 1;
             }
 
-            printf("** AES GCM: Decrypt auth data[%d]:\n",
+            printf("** AES GCM: Decrypt auth data[%ld]:\n",
                    h->u_mode.wolf_aes.aadlen);
             print_hex(" AAD", h->u_mode.wolf_aes.aadbuf,
                       h->u_mode.wolf_aes.aadlen);
@@ -2633,7 +2614,7 @@ gcry_error_t _gcry_cipher_wc_gettag(gcry_cipher_hd_t h, void* outtag,
     }
 
     if (!(is_tag_length_valid(taglen) || taglen >= AES_BLOCK_SIZE)) {
-        printf("** AES GCM: Invalid tag length %d\n", taglen);
+        printf("** AES GCM: Invalid tag length %ld\n", taglen);
         return GPG_ERR_INV_LENGTH;
     }
 
@@ -2642,89 +2623,43 @@ gcry_error_t _gcry_cipher_wc_gettag(gcry_cipher_hd_t h, void* outtag,
         !h->u_mode.wolf_aes.flags.key_set_enc) {
         h->u_mode.wolf_aes.flag_setDir = AES_ENCRYPTION;
 
-        /* Set key if not already set */
-        if (!h->u_mode.wolf_aes.flags.key_set_enc &&
-            h->u_mode.wolf_aes.flags.key_buf_valid) {
-            printf("** AES GCM: Setting key\n");
-            ret = wc_AesGcmSetKey(&h->u_mode.wolf_aes.enc_ctx,
-                                  h->u_mode.wolf_aes.key,
-                                  h->u_mode.wolf_aes.keylen);
-            if (ret != 0)
-                return GPG_ERR_INTERNAL;
-            h->u_mode.wolf_aes.flags.key_set_enc = 1;
-        }
-
-        /* Set IV if not already set, based on IV state flags */
-        if (!h->u_mode.wolf_aes.flags.iv_set_enc) {
-            printf("** AES GCM: Setting IV\n");
-            /* IV generation requested */
-            if (h->u_mode.wolf_aes.flags.iv_gen) {
-                printf("** AES GCM: Using IV generation\n");
-                ret = wc_AesGcmSetIV(&h->u_mode.wolf_aes.enc_ctx, AES_IV_SIZE,
-                                     h->u_mode.wolf_aes.iv,
-                                     h->u_mode.wolf_aes.ivlen,
-                                     h->u_mode.wolf_aes.rng);
-                /* IV buffer now holds generated IV */
-                h->u_mode.wolf_aes.flags.iv_buf_valid = 1;
-            }
-            /* IV set externally via API */
-            else if (h->u_mode.wolf_aes.flags.iv_buf_valid) {
-                printf("** AES GCM: Using externally provided IV\n");
-                ret = wc_AesGcmSetExtIV(&h->u_mode.wolf_aes.enc_ctx,
-                                        h->u_mode.wolf_aes.iv,
-                                        h->u_mode.wolf_aes.ivlen);
-            }
-            /* IV not set, use zero IV */
-            else {
-                printf("** AES GCM: Using zero IV\n");
-                memset(h->u_mode.wolf_aes.iv, 0, AES_IV_SIZE);
-                ret = wc_AesGcmSetExtIV(&h->u_mode.wolf_aes.enc_ctx,
-                                        h->u_mode.wolf_aes.iv, AES_IV_SIZE);
-                /* IV buffer now holds zero IV */
-                h->u_mode.wolf_aes.flags.iv_buf_valid = 1;
-            }
-            h->u_mode.wolf_aes.flags.iv_set_enc = 1;
+        ret = deferred_gcm_init(h, AES_ENCRYPTION);
+        printf("** AES GCM: Deferred init, ret=%d\n", ret);
+        if (ret != 0) {
+            return ret;
         }
     }
 
-    switch (h->mode) {
-        case GCRY_CIPHER_MODE_GCM:
-            /* Initialize GCM if not already done. IV should always be set
-             * before this */
-            if (!h->u_mode.wolf_aes.flags.aes_mode_init_enc) {
-                ret = wc_AesGcmInit(&h->u_mode.wolf_aes.enc_ctx,
-                                    h->u_mode.wolf_aes.aadbuf,
-                                    h->u_mode.wolf_aes.aadlen, NULL, 0);
-                printf("** AES GCM: Init, ret=%d\n", ret);
-                h->u_mode.wolf_aes.flags.aes_mode_init_enc = 1;
-            }
+    /* Initialize GCM if not already done. IV should always be set
+     * before this */
+    if (!h->u_mode.wolf_aes.flags.aes_mode_init_enc) {
+        ret = wc_AesGcmInit(&h->u_mode.wolf_aes.enc_ctx,
+                            h->u_mode.wolf_aes.aadbuf,
+                            h->u_mode.wolf_aes.aadlen, NULL, 0);
+        printf("** AES GCM: Init, ret=%d\n", ret);
+        h->u_mode.wolf_aes.flags.aes_mode_init_enc = 1;
+    }
 
-            /* AES GCM does not support taglen > AES_BLOCK_SIZE */
-            if (taglen > AES_BLOCK_SIZE) {
-                printf("** AES GCM: Truncating tag to AES_BLOCK_SIZE\n");
-                taglen = AES_BLOCK_SIZE;
-            }
+    /* AES GCM does not support taglen > AES_BLOCK_SIZE */
+    if (taglen > AES_BLOCK_SIZE) {
+        printf("** AES GCM: Truncating tag to AES_BLOCK_SIZE\n");
+        taglen = AES_BLOCK_SIZE;
+    }
 
-            if (h->u_mode.wolf_aes.flag_setDir == AES_ENCRYPTION) {
-                ret = wc_AesGcmEncryptFinal(&h->u_mode.wolf_aes.enc_ctx, outtag,
-                                            taglen);
-                printf("** AES GCM: Encrypt final, taglen=%d, ret=%d\n", taglen,
-                       ret);
-                if (ret != 0) {
-                    printf("outtag: %p, taglen: %d\n", outtag, taglen);
-                }
-                else {
-                    print_hex("** ENCRYPT auth_tag", outtag, taglen);
-                }
-            }
-            else {
-                printf("** AES GCM: INVALID DIRECTION\n");
-                return GPG_ERR_INV_CIPHER_MODE;
-            }
-            break;
-
-        default:
-            return GPG_ERR_INV_CIPHER_MODE;
+    if (h->u_mode.wolf_aes.flag_setDir == AES_ENCRYPTION) {
+        ret =
+            wc_AesGcmEncryptFinal(&h->u_mode.wolf_aes.enc_ctx, outtag, taglen);
+        printf("** AES GCM: Encrypt final, taglen=%ld, ret=%d\n", taglen, ret);
+        if (ret != 0) {
+            printf("outtag: %p, taglen: %ld\n", outtag, taglen);
+        }
+        else {
+            print_hex("** ENCRYPT auth_tag", outtag, taglen);
+        }
+    }
+    else {
+        printf("** AES GCM: INVALID DIRECTION\n");
+        return GPG_ERR_INV_CIPHER_MODE;
     }
 
     return (ret == 0) ? 0 : GPG_ERR_INTERNAL;
@@ -2741,7 +2676,7 @@ gcry_error_t _gcry_cipher_wc_checktag(gcry_cipher_hd_t h, const void* intag,
 
 
     if (!(is_tag_length_valid(taglen) || taglen >= AES_BLOCK_SIZE)) {
-        printf("** AES GCM: Invalid tag length %d\n", taglen);
+        printf("** AES GCM: Invalid tag length %ld\n", taglen);
         return GPG_ERR_INV_LENGTH;
     }
 
@@ -2763,48 +2698,10 @@ gcry_error_t _gcry_cipher_wc_checktag(gcry_cipher_hd_t h, const void* intag,
         !h->u_mode.wolf_aes.flags.key_set_dec) {
         h->u_mode.wolf_aes.flag_setDir = AES_DECRYPTION;
 
-        /* Set key if not already set */
-        if (!h->u_mode.wolf_aes.flags.key_set_dec &&
-            h->u_mode.wolf_aes.flags.key_buf_valid) {
-            printf("** AES GCM: Setting key\n");
-            ret = wc_AesGcmSetKey(&h->u_mode.wolf_aes.dec_ctx,
-                                  h->u_mode.wolf_aes.key,
-                                  h->u_mode.wolf_aes.keylen);
-            if (ret != 0)
-                return GPG_ERR_INTERNAL;
-            h->u_mode.wolf_aes.flags.key_set_dec = 1;
-        }
-
-        /* Set IV if not already set, based on IV state flags */
-        if (!h->u_mode.wolf_aes.flags.iv_set_dec) {
-            printf("** AES GCM: Setting IV\n");
-            /* IV generation requested */
-            if (h->u_mode.wolf_aes.flags.iv_gen) {
-                printf("** AES GCM: Using IV generation\n");
-                ret = wc_AesGcmSetIV(&h->u_mode.wolf_aes.dec_ctx, AES_IV_SIZE,
-                                     h->u_mode.wolf_aes.iv,
-                                     h->u_mode.wolf_aes.ivlen,
-                                     h->u_mode.wolf_aes.rng);
-                /* IV buffer now holds generated IV */
-                h->u_mode.wolf_aes.flags.iv_buf_valid = 1;
-            }
-            /* IV set externally via API */
-            else if (h->u_mode.wolf_aes.flags.iv_buf_valid) {
-                printf("** AES GCM: Using externally provided IV\n");
-                ret = wc_AesGcmSetExtIV(&h->u_mode.wolf_aes.dec_ctx,
-                                        h->u_mode.wolf_aes.iv,
-                                        h->u_mode.wolf_aes.ivlen);
-            }
-            /* IV not set, use zero IV */
-            else {
-                printf("** AES GCM: Using zero IV\n");
-                memset(h->u_mode.wolf_aes.iv, 0, AES_IV_SIZE);
-                ret = wc_AesGcmSetExtIV(&h->u_mode.wolf_aes.dec_ctx,
-                                        h->u_mode.wolf_aes.iv, AES_IV_SIZE);
-                /* IV buffer now holds zero IV */
-                h->u_mode.wolf_aes.flags.iv_buf_valid = 1;
-            }
-            h->u_mode.wolf_aes.flags.iv_set_dec = 1;
+        ret = deferred_gcm_init(h, AES_DECRYPTION);
+        printf("** AES GCM: Deferred init, ret=%d\n", ret);
+        if (ret != 0) {
+            return ret;
         }
     }
 
